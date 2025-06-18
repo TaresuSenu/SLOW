@@ -39,7 +39,7 @@ bool Peripheral::initNetwork(const char * hostName, int port){
     //configurando o timeout
 
     struct timeval timeVal;
-    timeVal.tv_sec = 5; // timeout definido para 5 segundos
+    timeVal.tv_sec = 3000; // timeout definido para 5 segundos
     timeVal.tv_usec = 0; // microsegundos
 
     if(setsockopt(sockFileDescriptor, SOL_SOCKET, SO_RCVTIMEO, (const char * )&timeVal, sizeof(timeVal)) < 0){
@@ -79,6 +79,7 @@ bool Peripheral::connect(){
 bool Peripheral::disconnect(){
     if(this->sendDisconnectMessage()){
         if(this->waitAck()==AckStatus::ACK_OK){
+            this->storeSession();
             this->sessionON = false;
             return 1;
         }else{
@@ -198,7 +199,7 @@ bool Peripheral::sendConnectMessage(){
     connectFlags.C = true;
     connectHeader.setFlags(connectFlags);
 
-    connectHeader.window = 7200;
+    connectHeader.window = 5 * 1440;
 
     uint8_t sendBuffer[SLOW_HEADER_SIZE];
 
@@ -294,6 +295,7 @@ bool Peripheral::waitSetupMessage(){
             this->centralSttl = setupHeader.getSttl();
             this->centralIniSeqNum = setupHeader.seqNum;
             this->centralWindowSize = setupHeader.window;
+            this->nextSeqNumToSend = setupHeader.seqNum+1;
 
             this->sessionON = true;
 
@@ -331,8 +333,9 @@ bool Peripheral::sendDataMessage(){
     dataHeader.sid = this->currentSessionId;
     dataHeader.setSttl(this->centralSttl);
 
-    Flags dataFlags = dataHeader.getFlags();
-    dataFlags.ACK = 1;
+    Flags dataFlags;
+    //dataFlags.ACK = 1;
+    //dataFlags.MB = 1;
     dataHeader.setFlags(dataFlags);
 
     dataHeader.seqNum = this->nextSeqNumToSend;
@@ -345,6 +348,12 @@ bool Peripheral::sendDataMessage(){
 
     uint8_t sendBuffer[SLOW_HEADER_SIZE];
     serializationOfSlowHeader(dataHeader, sendBuffer);
+
+    std::cout << "DEBUG: Enviando pacote Data (Hex): ";
+for (int i = 0; i < SLOW_HEADER_SIZE; ++i) {
+    std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)sendBuffer[i] << " ";
+}
+std::cout << std::dec << std::endl;
 
     ssize_t bytesSent = sendto(sockFileDescriptor, sendBuffer, SLOW_HEADER_SIZE, 0,
          (const sockaddr *) &centralAddress, sizeof(centralAddress));
@@ -376,7 +385,7 @@ AckStatus Peripheral::waitAck(){
     socklen_t senderAddressLenght = sizeof(senderAddress);
 
     // recvfrom espera receber dados ou dar erro
-    ssize_t bytesReceived = recvfrom(sockFileDescriptor, receiveBuffer, MAX_DATA_SIZE+SLOW_HEADER_SIZE, 0,
+    ssize_t bytesReceived = recvfrom(sockFileDescriptor, receiveBuffer, SLOW_HEADER_SIZE+MAX_DATA_SIZE, 0,
         (struct sockaddr *)&senderAddress, &senderAddressLenght);
 
     if (bytesReceived < 0) {
@@ -448,9 +457,11 @@ bool Peripheral::sendDisconnectMessage(){
 
     Flags disconnectFlags;
 
-    disconnectFlags.ACK = true;
-    disconnectFlags.C = true;
-    disconnectFlags.R = true; // ambos c e r ligados signica disconnect
+    disconnectFlags.ACK = 0;
+    disconnectFlags.C = 0;
+    disconnectFlags.R = 0; // ambos c e r ligados signica disconnect
+    disconnectFlags.AR = 0;
+    disconnectFlags.MB = 0;
 
     disconnectHeader.setFlags(disconnectFlags);
 
@@ -531,7 +542,7 @@ bool Peripheral::zeroWayConnect(const string& data) {
 
     Flags revive_flags;
     revive_flags.R = true;  // Flag Revive 
-    revive_flags.ACK = true; 
+    revive_flags.ACK = false; 
     // mb = 0 se n tem fragmentaçao
     reviveHeader.setFlags(revive_flags);
 

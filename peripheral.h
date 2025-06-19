@@ -33,6 +33,9 @@ class Peripheral{
         bool connect();
         bool disconnect();
         bool sendData(const string & data);
+        bool sendFragmentedData(const string & data, int fid, int fo, bool MB);
+        void processAck(SlowHeader ackHeader);
+        bool canSendFragment(size_t fragmentSize);
         bool zeroWayConnect(const string & data);
         void storeSession();
         bool canRevive();
@@ -40,15 +43,20 @@ class Peripheral{
     int sockFileDescriptor;
     struct sockaddr_in centralAddress;
 
+    int lastAckNumFromCentral;
+    int lastWindowFromCentral;
+
     SlowHeader packet;
+    SlowHeader lastReceivedAckHeader;
     SID currentSessionId;
     bool sessionON;
-    uint32_t nextSeqNumToSend;
+    uint32_t nextSeqNumToSend = 0;
 
     uint32_t centralSttl; 
     uint32_t centralIniSeqNum;
     uint32_t lastCentralSeqNum;
     uint16_t centralWindowSize;
+
 
     PreviousSessionInfo prevSessionInfo;
 

@@ -3,11 +3,19 @@
 static int current_fid = 0;
 
 Peripheral::Peripheral() : sockFileDescriptor(-1), sessionON(false), nextSeqNumToSend(0){
-    memset(&centralAddress, 0, sizeof(centralAddress));
-    currentSessionId = SID::Nil();
+    /*
+    Inicializa toda a estrutura do objeto Peripheral com valores padrão
+    */
+    memset(&centralAddress, 0, sizeof(centralAddress)); // Inicializa o endereço da central com 0, pois não há conexão com a mesma ainda.
+    currentSessionId = SID::Nil(); // Seta como Nil -> não há sessão ativa no momento.
 }
 
 Peripheral::~Peripheral(){
+    /*
+    Destrutor da classe Peripheral.
+    Verifica se o socket está aberto, e o fecha.
+    */
+    
     if(sockFileDescriptor >= 0){
         cout << "fechando o socket" << '\n';
         close(sockFileDescriptor);
@@ -15,6 +23,18 @@ Peripheral::~Peripheral(){
 }
 
 bool Peripheral::initNetwork(const char * hostName, int port){
+/*
+ Inicializa a conexão de rede com a central.
+ 
+  Abre um socket UDP, resolve o nome do host, configura o endereço e a porta
+  do servidor central, e define um timeout de recebimento.
+ 
+  param   hostName  Nome ou endereço do servidor central.
+  param   port      Porta UDP em que o servidor está escutando.
+  return  true se o socket foi criado e configurado com sucesso;
+          false em caso de falha na criação do socket, resolução do host ou configuração do timeout.
+ */
+    
     sockFileDescriptor = socket(AF_INET, SOCK_DGRAM, 0);
 
     if(sockFileDescriptor < 0){
@@ -33,8 +53,8 @@ bool Peripheral::initNetwork(const char * hostName, int port){
     }
 
     centralAddress.sin_family = AF_INET;
-    memcpy(&centralAddress.sin_addr.s_addr, serverInfo->h_addr_list[0], serverInfo->h_length);
-    centralAddress.sin_port = htons(port);
+    memcpy(&centralAddress.sin_addr.s_addr, serverInfo->h_addr_list[0], serverInfo->h_length); // Copia o endereço da central.
+    centralAddress.sin_port = htons(port); // Salva número da porta.
 
     cout << "Endereço central: " << hostName << ":" << port << '\n';
 
@@ -42,7 +62,7 @@ bool Peripheral::initNetwork(const char * hostName, int port){
 
     struct timeval timeVal;
     timeVal.tv_sec = 3000; // timeout definido para 5 segundos
-    timeVal.tv_usec = 0; // microsegundos
+    timeVal.tv_usec = 0; // microssegundos
 
     if(setsockopt(sockFileDescriptor, SOL_SOCKET, SO_RCVTIMEO, (const char * )&timeVal, sizeof(timeVal)) < 0){
         cout << "WARNING: Falha em configurar o timeout\n";
@@ -52,6 +72,14 @@ bool Peripheral::initNetwork(const char * hostName, int port){
 }
 
 bool Peripheral::connect(){
+    /*
+    Inicia a conexão com a central. Envia a mensagem de solicitação de conexão e processa a
+    mensagem de setup recebida da central.
+
+    return  true se conexão for estabelecida corretamente;
+            false caso algum problema ocorra.
+    */
+    
     if(this->sendConnectMessage()){
         if(this->waitSetupMessage()){
             cout << "Setup bem sucedido\n";
@@ -79,6 +107,15 @@ bool Peripheral::connect(){
 }
 
 bool Peripheral::disconnect(){
+    /*
+    Encerra a conexão com a central. Envia a mensagem de desconexão e
+    processa o retorno da central.
+
+    return  true se conexão for fechada corretamente;
+            false caso algum problema ocorra.
+
+    */
+    
     if(this->sendDisconnectMessage()){
         if(this->waitAck()==AckStatus::ACK_OK){
             this->storeSession();
@@ -96,10 +133,30 @@ bool Peripheral::disconnect(){
 }
 
 int generateFID() {
+    /*
+    Gera um Fragment ID (FID), que identificará unicamente um fragmento.
+    Os FID's começam em 0 e são incrementados sequencialmente.
+    
+    return: próximo fid livre para ser usado por um fragmento.
+    */
+    
     return current_fid++;
 }
 
 bool Peripheral::sendFragmentedData(const string & data, int fid, int fo, bool MB){
+    /*
+    Envia uma mensagem à central, que foi dividida em vários fragmentos pois seu tamanho total é 
+    maior que o espaço total de dados de um fragmento. Depois, processa o ACK enviado pela central.
+
+    param   data  Dados a serem enviados.
+    param   fid   Fragment ID.
+    param   fo    Fragment offset, indica qual a posição deste fragmento dentro da mensagem inteira.
+    param   MB    More Bytes, indica se há mais fragmentos a serem enviados para completar a mensagem inteira.
+
+    return  true se o envio foi bem-sucedido;
+            false, caso contrário.
+    */
+    
     if (sockFileDescriptor < 0 || !sessionON) {
         cout << "ERRO: Socket não inicializado ou sessão não ativa. Não é possível enviar dados de aplicação.\n";
         return false;
@@ -116,19 +173,19 @@ bool Peripheral::sendFragmentedData(const string & data, int fid, int fo, bool M
     dataHeader.setFlags(dataFlags);
 
     dataHeader.seqNum = this->nextSeqNumToSend;
-   dataHeader.ackNum = this->lastCentralSeqNum; // Último seqnum conhecido do central
+   dataHeader.ackNum = this->lastCentralSeqNum; // Último seqnum conhecido do central.
 
-    dataHeader.window = 5 * MAX_DATA_SIZE; // Janela de recebimento do peripheral (exemplo)
+    dataHeader.window = 5 * MAX_DATA_SIZE; // janela de recebimento do peripheral.
     dataHeader.fid = fid;
     dataHeader.fo = fo;
 
     // Preparar o buffer de envio completo (cabeçalho + dados)
-    uint8_t sendBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE]; // MAX_SLOW_PACKET_SIZE = 1472
+    uint8_t sendBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE];
     
-    // 1. Serializar o cabeçalho no início do buffer
+    // 1. Serializa o cabeçalho no início do buffer
     serializationOfSlowHeader(dataHeader, sendBuffer); // Coloca 32 bytes no buffer
 
-    // 2. Copiar os dados da aplicação para o buffer, logo após o cabeçalho
+    // 2. Copia os dados para o buffer, logo após o cabeçalho
     size_t dataSize = data.size();
     memcpy(&sendBuffer[SLOW_HEADER_SIZE], data.c_str(), dataSize);
 
@@ -148,11 +205,6 @@ bool Peripheral::sendFragmentedData(const string & data, int fid, int fo, bool M
             cout << "tentando transmissão de dados\n";
         }
 
-        while (!canSendFragment(data.size())) {
-            // Espera liberar espaço no buffer da central.
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        
         // Enviar pela Rede
         ssize_t bytesSent = sendto(sockFileDescriptor, sendBuffer, totalSize, 0,
                                     (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
@@ -168,11 +220,11 @@ bool Peripheral::sendFragmentedData(const string & data, int fid, int fo, bool M
             return false;
         } 
 
+        // Recebe o ACK da central após o envio.
         AckStatus status = this->waitAck();
 
         if (status == AckStatus::ACK_OK) {
             SlowHeader ackHeader = this->lastReceivedAckHeader;
-            processAck(ackHeader);
         }
 
         if(status == AckStatus::ACK_OK){
@@ -197,12 +249,22 @@ bool Peripheral::sendFragmentedData(const string & data, int fid, int fo, bool M
 }
 
 bool Peripheral::sendData(const string & data){
+    /*
+    Envia uma mensagem à central, dividindo-a em fragmentos caso seu tamanho total
+    ultrapasse o tamanho máximo de um fragmento. Se for o caso, usa a função sendFragmentedData().
+
+    param   data  Dados a serem enviados.
+
+    return  true se o envio foi bem-sucedido;
+            false, caso contrário.
+    */
+
     if (sockFileDescriptor < 0 || !sessionON) {
         cout << "ERRO: Socket não inicializado ou sessão não ativa. Não é possível enviar dados de aplicação.\n";
         return false;
     }
 
-    
+    // Verifica se a fragmentação é necessária.
     if (data.size() > MAX_DATA_SIZE) {
         int size = data.size();
         int numPackages = (size + MAX_DATA_SIZE - 1) / MAX_DATA_SIZE;
@@ -211,7 +273,7 @@ bool Peripheral::sendData(const string & data){
         for(int i = 0; i < numPackages; i++){
             int fo = i;
             bool MB = true;
-            if(i == numPackages - 1){
+            if(i == numPackages - 1){ // Último fragmento, não há nada mais a ser enviado.
                 MB = false;
             }
 
@@ -223,6 +285,7 @@ bool Peripheral::sendData(const string & data){
         return true;
     }
 
+    // Não precisou de fragmentação; vai enviar apenas um pacote.
     SlowHeader dataHeader;
 
     dataHeader.sid = this->currentSessionId;
@@ -230,18 +293,18 @@ bool Peripheral::sendData(const string & data){
 
     Flags dataFlags;
     dataFlags.ACK = false;
-    dataFlags.MB = false;  // Sem fragmentação por enquanto
+    dataFlags.MB = false;
     dataHeader.setFlags(dataFlags);
 
     dataHeader.seqNum = this->nextSeqNumToSend;
     dataHeader.ackNum = this->lastCentralSeqNum; // Último seqnum conhecido do central
 
-    dataHeader.window = 5 * MAX_DATA_SIZE; // Janela de recebimento do peripheral (exemplo)
-    dataHeader.fid = 0; // Sem fragmentação
-    dataHeader.fo = 0;  // Sem fragmentação
+    dataHeader.window = 5 * MAX_DATA_SIZE; // Janela de recebimento do peripheral.
+    dataHeader.fid = 0;
+    dataHeader.fo = 0;
 
     // Preparar o buffer de envio completo (cabeçalho + dados)
-    uint8_t sendBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE]; // MAX_SLOW_PACKET_SIZE = 1472
+    uint8_t sendBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE];
     
     // 1. Serializar o cabeçalho no início do buffer
     serializationOfSlowHeader(dataHeader, sendBuffer); // Coloca 32 bytes no buffer
@@ -265,11 +328,7 @@ bool Peripheral::sendData(const string & data){
         if(!i){
             cout << "tentando transmissão de dados";
         }
-        
-        while (!canSendFragment(data.size())) {
-            // Espera o buffer da central ter espaço.
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+    
         // Enviar pela Rede
         ssize_t bytesSent = sendto(sockFileDescriptor, sendBuffer, totalSize, 0,
                                     (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
@@ -309,6 +368,16 @@ bool Peripheral::sendData(const string & data){
 }
 
 bool Peripheral::sendConnectMessage(){
+    /*
+    Envia a mensagem de conexão (CONNECT) ao servidor central. 
+    Constrói o cabeçalho SLOW com a flag C (Connect) ativada e a janela
+    de recepção do peripheral, serializa-o em um buffer e envia via UDP à central.
+    
+    return true se o pacote CONNECT foi enviado com sucesso;
+             false em caso de falha na criação do socket, resolução do host
+                   ou envio do pacote.
+    */
+
     if(sockFileDescriptor < 0){
         cout << "Sem socket\n";
         return 0;
@@ -326,18 +395,11 @@ bool Peripheral::sendConnectMessage(){
 
     serializationOfSlowHeader(connectHeader, sendBuffer);
 
-    // Em Peripheral::sendConnectMessage(), antes de sendto()
-std::cout << "DEBUG: Enviando pacote Connect (Hex): ";
-for (int i = 0; i < SLOW_HEADER_SIZE; ++i) { // SLOW_HEADER_SIZE deve ser 32
-    std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)sendBuffer[i] << " ";
-}
-
-std::cout << std::dec << std::endl; // Volta para decimal para outros couts
-
-    //enviar pela rede usando sendto()
+    //envia pela rede usando sendto().
     ssize_t bytesSent = sendto(sockFileDescriptor, sendBuffer, SLOW_HEADER_SIZE, 0,
         (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
     
+    // Verifica se a totalidade dos bytes foi enviada.
     if(bytesSent < 0){
         perror("sendto");
         cout << "Erro no envio de Connect\n";
@@ -348,13 +410,37 @@ std::cout << std::dec << std::endl; // Volta para decimal para outros couts
         return 0;
     }else{
         cout << "Mensagem enviada sem problemas\n";
-
         this->nextSeqNumToSend = connectHeader.seqNum + 1;
         return 1;
     }
 }
 
 bool Peripheral::waitSetupMessage(){
+/*
+  Aguarda e processa a mensagem de setup (resposta ao CONNECT) da central.
+ 
+  Recebe um pacote UDP contendo o cabeçalho SLOW de setup. Valida:
+    - sucesso no recvfrom()
+    - tamanho mínimo do cabeçalho
+  Se vier payload extra (bytes além de SLOW_HEADER_SIZE), imprime como texto.
+     Em seguida:
+    - desserializa o header
+    - checa que ackNum == 0
+    - verifica a flag AR (Accept/Reject)
+    - preenche os campos de sessão em caso de aceitação:
+        * currentSessionId
+        * centralSttl
+        * centralIniSeqNum
+        * centralWindowSize
+        * nextSeqNumToSend = centralIniSeqNum + 1
+        * sessionON = true
+ 
+   return true  se a central aceitou o CONNECT;
+          false em caso de erro de recvfrom, pacote inválido
+                (tamanho insuficiente ou ackNum != 0),
+                ou rejeição pelo servidor (AR == 0).
+ */
+
     if(sockFileDescriptor < 0){
         cout << "Sem socket\n";
         return false;
@@ -370,7 +456,7 @@ bool Peripheral::waitSetupMessage(){
 
     if(bytesReceived < 0){
         perror("recvfrom");
-        cout << "Errro ao receber os dados da central\n";
+        cout << "Erro ao receber os dados da central\n";
         return false;
     }
 
@@ -385,7 +471,7 @@ bool Peripheral::waitSetupMessage(){
         std::cout << "-----------------------------------------------------------\n";
         std::cout << ">>> MENSAGEM DE ERRO/DADOS DO CENTRAL (Payload): <<<\n";
         // Imprime como string. Adiciona um terminador nulo para segurança se não for uma string bem formada.
-        // Ou imprima byte a byte se não tiver certeza que é uma string.
+        // Ou imprime byte a byte se não tiver certeza que é uma string.
         std::string error_message_from_central;
         error_message_from_central.reserve(payload_length);
         for(size_t i = 0; i < payload_length; ++i) {
@@ -422,28 +508,36 @@ bool Peripheral::waitSetupMessage(){
 
             return true;
 
-        }else{ // conexao nao aceita por A/R esta falsa
-
-            // Em Peripheral::sendConnectMessage(), antes de sendto()
-std::cout << "DEBUG: Enviando pacote Connect (Hex): ";
-for (int i = 0; i < SLOW_HEADER_SIZE; ++i) { // SLOW_HEADER_SIZE deve ser 32
-    std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)receiveBuffer[i] << " ";
-}
-std::cout << std::dec << std::endl; // Volta para decimal para outros couts
-
+        }else{ // conexao nao aceita por A/R estar 'false'.
             cout << "Conexão rejeitada pela central\n";
             this->sessionON = false;
             this->currentSessionId = SID::Nil();
             return false;
         }
-    }else{
-        cout << "AckNum inválido recebido da Setup Message\n";
-        return false;
-    }
-
+        }else{
+            cout << "AckNum inválido recebido da Setup Message\n";
+            return false;
+        }
 }
 
 bool Peripheral::sendDataMessage(){
+    /*
+    Envia o pacote DATA para o servidor central.
+    
+    Prepara um cabeçalho SLOW vazio (sem payload) com:
+        - SID atual da sessão
+        - STTL mais recente do central
+        - seqNum igual ao próximo byte a ser enviado
+        - ackNum apontando para o início da janela do central
+        - janela de recepção local (exemplo: 5 * 1440 bytes)
+    Serializa o cabeçalho em um buffer e envia via UDP ao endereço armazenado em centralAddress.
+    Em caso de sucesso, incrementa nextSeqNumToSend em 1.
+    
+    return true  se o pacote DATA foi enviado completamente;
+            false em caso de descritor inválido, sessão inativa, erro no sendto
+                    ou envio parcial de bytes.
+    */
+
     if(sockFileDescriptor < 0 || !sessionON){
         cout << "Foi tentado enviar Data, porém o socket não está inicializado ou sessão não está ativa\n";
         return false;
@@ -455,8 +549,7 @@ bool Peripheral::sendDataMessage(){
     dataHeader.setSttl(this->centralSttl);
 
     Flags dataFlags;
-    //dataFlags.ACK = 1;
-    //dataFlags.MB = 1;
+    //dataFlags.ACK = 1; //No PDF do trabalho fala pra deixar a flag ativa, mas aí não funciona.
     dataHeader.setFlags(dataFlags);
 
     dataHeader.seqNum = this->nextSeqNumToSend;
@@ -469,12 +562,6 @@ bool Peripheral::sendDataMessage(){
 
     uint8_t sendBuffer[SLOW_HEADER_SIZE];
     serializationOfSlowHeader(dataHeader, sendBuffer);
-
-    std::cout << "DEBUG: Enviando pacote Data (Hex): ";
-for (int i = 0; i < SLOW_HEADER_SIZE; ++i) {
-    std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)sendBuffer[i] << " ";
-}
-std::cout << std::dec << std::endl;
 
     ssize_t bytesSent = sendto(sockFileDescriptor, sendBuffer, SLOW_HEADER_SIZE, 0,
          (const sockaddr *) &centralAddress, sizeof(centralAddress));
@@ -496,6 +583,30 @@ std::cout << std::dec << std::endl;
 }
 
 AckStatus Peripheral::waitAck(){
+    /*
+    Aguarda e processa um ACK do servidor central.
+    
+    Tenta ler um pacote UDP no socket configurado (com timeout).  
+    Se o socket não estiver aberto ou a sessão inativa, retorna RECV_ERROR.  
+    Se ocorrer timeout no recvfrom(), retorna TIMEOUT.  
+    Se ocorrer outro erro de recvfrom(), retorna RECV_ERROR.  
+    Se o pacote for menor que o cabeçalho SLOW (32 bytes), retorna INVALID_PACKET.  
+    Desserializa o header e valida:
+        - SID confere com o da sessão atual
+        - Flags: somente ACK=true
+        - ackNum == nextSeqNumToSend – 1 (o último byte enviado)
+        Caso falhe, retorna INVALID_PACKET.
+    - Se tudo estiver correto, atualiza:
+        - centralSttl        = header.getSttl()
+        - lastCentralSeqNum  = header.seqNum
+        - centralWindowSize  = header.window
+    
+    return AckStatus::ACK_OK       se o ACK for válido;
+            AckStatus::TIMEOUT      se recvfrom() retornar EAGAIN/EWOULDBLOCK;
+            AckStatus::INVALID_PACKET em caso de header inválido;
+            AckStatus::RECV_ERROR   em outros erros de recvfrom() ou socket.
+    */
+
     if(sockFileDescriptor < 0 || !sessionON){
         cout << "Foi tentado receber o ACK, porém o socket não está inicializado ou sessão não está ativa\n";
         return AckStatus::RECV_ERROR;
@@ -503,14 +614,14 @@ AckStatus Peripheral::waitAck(){
 
     uint8_t receiveBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE];
     struct sockaddr_in senderAddress;
-    socklen_t senderAddressLenght = sizeof(senderAddress);
+    socklen_t senderAddressLength = sizeof(senderAddress);
 
     // recvfrom espera receber dados ou dar erro
     ssize_t bytesReceived = recvfrom(sockFileDescriptor, receiveBuffer, SLOW_HEADER_SIZE+MAX_DATA_SIZE, 0,
-        (struct sockaddr *)&senderAddress, &senderAddressLenght);
+        (struct sockaddr *)&senderAddress, &senderAddressLength);
 
-    if (bytesReceived < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if(bytesReceived < 0){
+        if(errno == EAGAIN || errno == EWOULDBLOCK){
             cout << "DEU PAU AQUI\n";
             return AckStatus::TIMEOUT;
         } else {
@@ -565,6 +676,14 @@ AckStatus Peripheral::waitAck(){
 }
 
 bool Peripheral::sendDisconnectMessage(){
+    /**
+    Envia a mensagem de DISCONNECT ao servidor central.
+    Constrói um cabeçalho com todas as flags 'false', ajusta o SID atual, seqNum e ackNum.
+    Serializa o cabeçalho em um buffer e envia via UDP ao centralAddress.
+    
+    return true  se o pacote DISCONNECT foi enviado completamente;
+           false se o socket não estiver aberto, a sessão inativa, ocorrer erro no sendto() ou envio parcial de bytes.
+    */
     if(sockFileDescriptor < 0 || !sessionON){
         cout << "Foi tentado enviar disconnect, porém o socket não está inicializado ou sessão não está ativa\n";
         return false;
@@ -580,7 +699,7 @@ bool Peripheral::sendDisconnectMessage(){
 
     disconnectFlags.ACK = 0;
     disconnectFlags.C = 0;
-    disconnectFlags.R = 0; // ambos c e r ligados signica disconnect
+    disconnectFlags.R = 0; // PDF diz que ambos c e r ligados signica disconnect, mas dá erro.
     disconnectFlags.AR = 0;
     disconnectFlags.MB = 0;
 
@@ -618,6 +737,16 @@ bool Peripheral::sendDisconnectMessage(){
 }
 
 void Peripheral::storeSession() {
+    /*
+     Armazena os parâmetros da sessão atual para possível reconexão (revive) futura.
+     Se houver uma sessão ativa, copia-a para `prevSessionInfo`:
+       sid               : identificador de sessão atual
+       sttl              : tempo de vida remanescente do servidor (centralSttl)
+       lastCentralSeqNum : último número de sequência recebido do central
+       valid             : marca as informações como válidas para revive
+     Emite mensagem de confirmação. Se não houver sessão ativa, exibe uma mensagem de aviso.
+    */
+
     if (sessionON) { // Só armazena se a sessão atual estiver ativa e configurada
         prevSessionInfo.sid = this->currentSessionId;
         prevSessionInfo.sttl = this->centralSttl;
@@ -630,11 +759,37 @@ void Peripheral::storeSession() {
 }
 
 bool Peripheral::canRevive(){
+    /*
+    Retorna se é possível reviver a sessão, isto é, se há informações armazenadas sobre
+    uma sessão anteriormente ativa.
+
+    return  true se for possível reviver uma sessão;
+            false caso não haja informações sobre uma sessão anterior.
+    */
     return prevSessionInfo.valid;
 }
 
-// peripheral.cpp
 bool Peripheral::zeroWayConnect(const string& data) {
+/**
+  @brief  Tenta reestabelecer conexão “0-way” (revive) usando sessão anterior.
+ 
+  Verifica pré-condições (socket aberto, sessão não ativa, existência de
+  informações de sessão anterior). Se o payload couber em um único pacote,
+  monta um cabeçalho SLOW com a flag R (revive) e o último ACK do central,
+  anexa os dados (se houver), envia via UDP e incrementa nextSeqNumToSend.
+  Em seguida, aguarda resposta com timeout:
+    Se receber um pacote “Failed”, considera o revive rejeitado, invalida sessão e retorna false.
+    Se receber um ACK aceitando com o mesmo SID anteriore ackNum igual ao seqNum do revive, atualiza parâmetros de sessão,
+    marca sessionON=true, e retorna true.
+    Caso contrário, retorna false.
+ 
+  param  data  Dados a enviar junto com o revive.
+
+  return true  se o central aceitou o revive e reestabeleceu sessão;
+          false em caso de pré-condição não atendida, erro de envio/recepção,
+                resposta “Failed” ou ACK inválido.
+ */
+
     if (sockFileDescriptor < 0) {
         cout << "ERRO (0-way): Socket não inicializado.\n";
         return false;
@@ -650,7 +805,7 @@ bool Peripheral::zeroWayConnect(const string& data) {
 
     // Verificar se o payload não é muito grande (sem fragmentação por enquanto)
     if (data.size() > MAX_DATA_SIZE) {
-        cout << "Erros dados muito longo " << data.size()
+        cout << "Erro: dados muito longos: " << data.size()
                   << " bytes. Máximo: " << MAX_DATA_SIZE << "\n";
         return false;
     }
@@ -762,23 +917,4 @@ bool Peripheral::zeroWayConnect(const string& data) {
     cout << "Erro 0way Resposta do central para revive não reconhecida ou inválida.\n";
     this->sessionON = false; 
     return false;
-}
-
-uint32_t lastAckNumFromCentral; // ackNum do último ACK recebido
-uint32_t lastWindowFromCentral; // window do último ACK recebido
-
-// Atualize essas variáveis ao processar o ACK:
-void Peripheral::processAck(SlowHeader ackHeader) {
-    this->lastAckNumFromCentral = ackHeader.ackNum;
-    this->lastWindowFromCentral = ackHeader.window;
-
-    cout << "window: " << this->lastWindowFromCentral << endl;
-}
-
-bool Peripheral::canSendFragment(size_t fragmentSize) {
-    uint32_t bytesInFlight = this->nextSeqNumToSend - this->lastAckNumFromCentral;
-
-    cout << "bytesInFlight =  " << this->nextSeqNumToSend << " - " << this->lastAckNumFromCentral << endl;
-
-    return (bytesInFlight + fragmentSize <= this->lastWindowFromCentral);
 }

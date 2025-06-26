@@ -17,7 +17,7 @@ int main(){
 
             if(operation == "disconnect"){
                 if(peripheral.disconnect()){
-                    cout << "Desconectado com êxito.";
+                    cout << "Desconectado com êxito.\n";
                 }else{
                     cout << "erro ao enviar a mensagem de disconnect ou validaçao do ack\n";
                 }
@@ -31,7 +31,7 @@ int main(){
                getline(cin, data);
 
                 if(peripheral.sendData(data)){
-                    cout << "Dados enviados com êxito.";
+                    cout << "Dados enviados com êxito.\n";
                 }else{
                     cout << "erro ao enviar os dados ou validaçao do ack\n";
                 }

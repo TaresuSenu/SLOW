@@ -34,8 +34,6 @@ class Peripheral{
         bool disconnect();
         bool sendData(const string & data);
         bool sendFragmentedData(const string & data, int fid, int fo, bool MB);
-        void processAck(SlowHeader ackHeader);
-        bool canSendFragment(size_t fragmentSize);
         bool zeroWayConnect(const string & data);
         void storeSession();
         bool canRevive();

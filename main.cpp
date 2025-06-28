@@ -22,7 +22,7 @@ int main(){
                     cout << "erro ao enviar a mensagem de disconnect ou validaçao do ack\n";
                 }
             }else if(operation == "data"){
-                string data; // Use um nome diferente de 'data' se 'data' for um membro da classe ou struct
+                string data;
 
                 if (cin.peek() == '\n') { // Verifica se há um newline pendente
                     cin.ignore();
@@ -36,11 +36,6 @@ int main(){
                     cout << "erro ao enviar os dados ou validaçao do ack\n";
                 }
             }else if(operation == "revive"){
-                // so pra ter algo 
-                peripheral.storeSession();
-                peripheral.disconnect();
-                //
-
                 if (peripheral.canRevive()) { // Se há dados de sessão anterior
                     cout << "Tentando 0-Way connect (revive)...\n";
                     string reviveData;

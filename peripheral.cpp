@@ -326,7 +326,7 @@ bool Peripheral::sendData(const string & data){
             cout << "tentando retransmissão\n";
         }
         if(!i){
-            cout << "tentando transmissão de dados";
+            cout << "Tentando transmissão de dados\n";
         }
     
         // Enviar pela Rede
@@ -502,7 +502,7 @@ bool Peripheral::waitSetupMessage(){
             this->centralSttl = setupHeader.getSttl();
             this->centralIniSeqNum = setupHeader.seqNum;
             this->centralWindowSize = setupHeader.window;
-            this->nextSeqNumToSend = setupHeader.seqNum+1;
+            //this->nextSeqNumToSend = setupHeader.seqNum+1;
 
             this->sessionON = true;
 
@@ -770,151 +770,153 @@ bool Peripheral::canRevive(){
 }
 
 bool Peripheral::zeroWayConnect(const string& data) {
-/**
-  @brief  Tenta reestabelecer conexão “0-way” (revive) usando sessão anterior.
- 
-  Verifica pré-condições (socket aberto, sessão não ativa, existência de
-  informações de sessão anterior). Se o payload couber em um único pacote,
-  monta um cabeçalho SLOW com a flag R (revive) e o último ACK do central,
-  anexa os dados (se houver), envia via UDP e incrementa nextSeqNumToSend.
-  Em seguida, aguarda resposta com timeout:
-    Se receber um pacote “Failed”, considera o revive rejeitado, invalida sessão e retorna false.
-    Se receber um ACK aceitando com o mesmo SID anteriore ackNum igual ao seqNum do revive, atualiza parâmetros de sessão,
-    marca sessionON=true, e retorna true.
-    Caso contrário, retorna false.
- 
-  param  data  Dados a enviar junto com o revive.
+    /**
+    Tenta reestabelecer conexão “0-way” (revive) usando sessão anterior.
+    
+    Verifica pré-condições (socket aberto, sessão não ativa, existência de
+    informações de sessão anterior). Se o payload couber em um único pacote,
+    monta um cabeçalho SLOW com a flag R (revive) e o último ACK do central,
+    anexa os dados (se houver), envia via UDP e incrementa nextSeqNumToSend.
+    Em seguida, aguarda resposta com timeout:
+        Se receber um pacote “Failed”, considera o revive rejeitado, invalida sessão e retorna false.
+        Se receber um ACK aceitando com o mesmo SID anteriore ackNum igual ao seqNum do revive, atualiza parâmetros de sessão,
+        marca sessionON=true, e retorna true.
+        Caso contrário, retorna false.
+    
+    param  data  Dados a enviar junto com o revive.
 
-  return true  se o central aceitou o revive e reestabeleceu sessão;
-          false em caso de pré-condição não atendida, erro de envio/recepção,
-                resposta “Failed” ou ACK inválido.
- */
+    return true  se o central aceitou o revive e reestabeleceu sessão;
+            false em caso de pré-condição não atendida, erro de envio/recepção,
+                    resposta “Failed” ou ACK inválido.
+    */
 
     if (sockFileDescriptor < 0) {
         cout << "ERRO (0-way): Socket não inicializado.\n";
         return false;
     }
     if (sessionON) {
-        cout << "Erro Uma sessão já está ativa. Desconecte primeiro.\n";
+        cout << "Erro: Uma sessão já está ativa. Desconecte primeiro.\n";
         return false;
     }
     if (!prevSessionInfo.valid) {
-        cout << "WArning: Nenhuma informação de sessão anterior válida para tentar reestabelecer conexão.\n";
-        return false;
-    }
-
-    // Verificar se o payload não é muito grande (sem fragmentação por enquanto)
-    if (data.size() > MAX_DATA_SIZE) {
-        cout << "Erro: dados muito longos: " << data.size()
-                  << " bytes. Máximo: " << MAX_DATA_SIZE << "\n";
+        cout << "Warning: Nenhuma informação de sessão anterior válida para tentar reestabelecer conexão.\n";
         return false;
     }
 
     cout << "Tentando 0-Way Connect (Revive) para SID anterior...\n";
 
-    SlowHeader reviveHeader;
-    reviveHeader.sid = prevSessionInfo.sid;
-    reviveHeader.setSttl(prevSessionInfo.sttl); // Usar o STTL da sessão anterior
-
+    // 2. Montagem e envio da mensagem de revive
+    SlowHeader reviveHeaderBase;
+    reviveHeaderBase.sid = prevSessionInfo.sid;
+    reviveHeaderBase.setSttl(prevSessionInfo.sttl);
+    reviveHeaderBase.ackNum = prevSessionInfo.lastCentralSeqNum;
+    reviveHeaderBase.window = 5 * 1440;
+    
     Flags revive_flags;
-    revive_flags.R = true;  // Flag Revive 
-    revive_flags.ACK = false; 
-    // mb = 0 se n tem fragmentaçao
-    reviveHeader.setFlags(revive_flags);
+    revive_flags.R = true;
+    
+    if (data.size() > MAX_DATA_SIZE) { // Precisa fragmentar
+        int fid = generateFID();
+        size_t totalLen = data.size();
+        int numFrags = (totalLen + MAX_DATA_SIZE - 1) / MAX_DATA_SIZE;
 
-    reviveHeader.seqNum = this->nextSeqNumToSend; 
-    reviveHeader.ackNum = prevSessionInfo.lastCentralSeqNum; // ACK para o último seqnum do central da sessão anterior
-    reviveHeader.window = 5 * 1440; 
-    // fid e fo = 0 por padrão
+        for (int i = 0; i < numFrags; ++i) {
+            SlowHeader h = reviveHeaderBase;
+            size_t offset = i * MAX_DATA_SIZE;
+            size_t segSz = std::min(totalLen - offset, (size_t)MAX_DATA_SIZE);
+            
+            h.fid = fid;
+            h.fo = i;
+            Flags f = revive_flags;
+            f.MB = (i < numFrags - 1);
+            h.setFlags(f);
+            h.seqNum = nextSeqNumToSend;
 
-    uint8_t sendBuffer[SLOW_HEADER_SIZE+MAX_DATA_SIZE];
-    serializationOfSlowHeader(reviveHeader, sendBuffer); // coloca o header no buffer
+            uint8_t buf[SLOW_HEADER_SIZE + MAX_DATA_SIZE];
+            serializationOfSlowHeader(h, buf);
+            memcpy(buf + SLOW_HEADER_SIZE, data.data() + offset, segSz);
+            size_t totalPacketSize = SLOW_HEADER_SIZE + segSz;
 
-    size_t dataTam = data.size();
-    if (dataTam > 0) {
-        memcpy(&sendBuffer[SLOW_HEADER_SIZE], data.c_str(), dataTam); // coloca os dados
+            ssize_t sent = sendto(sockFileDescriptor, buf, totalPacketSize, 0, (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
+            if (sent < 0 || (size_t)sent != totalPacketSize) {
+                perror("sendto - 0-way fragment");
+                return false;
+            }
+            nextSeqNumToSend++;
+        }
+    } else { // Não precisa fragmentar
+        SlowHeader h = reviveHeaderBase;
+        h.seqNum = nextSeqNumToSend;
+        Flags f = revive_flags;
+        f.MB = false;
+        h.setFlags(f);
+
+        uint8_t buf[SLOW_HEADER_SIZE + MAX_DATA_SIZE];
+        serializationOfSlowHeader(h, buf);
+        if (!data.empty()) {
+            memcpy(buf + SLOW_HEADER_SIZE, data.data(), data.size());
+        }
+        size_t totalPacketSize = SLOW_HEADER_SIZE + data.size();
+
+        ssize_t sent = sendto(sockFileDescriptor, buf, totalPacketSize, 0, (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
+        if (sent < 0 || (size_t)sent != totalPacketSize) {
+            perror("sendto - 0-way single packet");
+            return false;
+        }
+        nextSeqNumToSend++;
     }
-    size_t totalSize = SLOW_HEADER_SIZE + dataTam;
 
-    // Enviar a mensagem "Data (revive)"
-    ssize_t bytes_sent = sendto(sockFileDescriptor, sendBuffer, totalSize, 0,
-                                (const struct sockaddr *)&centralAddress, sizeof(centralAddress));
-
-    if (bytes_sent < 0) {
-        perror("sendto - 0-way connect");
-        cout << "erro ao enviar mensagem Data de revive.\n";
-        return false;
-    } else if (bytes_sent != totalSize) {
-        cout << "Warning: Nem todos os bytes da mensagem Data de revive foram enviados.\n";
-        return false;
-    }
-
-    // foi enviado data entao incremente nextseqnum
-    this->nextSeqNumToSend++; // Incrementar para o próximo pacote *novo*
-
-    // Esperar pela resposta (Ack com A/R ou Failed)
-    // Vamos reutilizar uma lógica similar a waitAck, mas com validação específica
-    uint8_t responseBuffer[MAX_DATA_SIZE+SLOW_HEADER_SIZE];
+    uint8_t responseBuffer[MAX_DATA_SIZE + SLOW_HEADER_SIZE];
     struct sockaddr_in senderAddress;
     socklen_t senderAddress_len = sizeof(senderAddress);
 
-    // Usando recvfrom com timeout 
-    ssize_t bytesReceived = recvfrom(sockFileDescriptor, responseBuffer, MAX_DATA_SIZE+SLOW_HEADER_SIZE, 0,
-                             (struct sockaddr *)&senderAddress, &senderAddress_len);
+    ssize_t bytesReceived = recvfrom(sockFileDescriptor, responseBuffer, sizeof(responseBuffer), 0,
+                                     (struct sockaddr *)&senderAddress, &senderAddress_len);
 
     if (bytesReceived < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            cout << "TIMED OUT ON 0way Sem resposta do central para a tentativa de revive.\n";
+            cout << "TIMED OUT: Sem resposta do central para a tentativa de revive.\n";
         } else {
             perror("recvfrom - 0-way response");
-            cout << "Erro ao receber resposta do central.\n";
         }
         return false;
     }
 
     if (bytesReceived < SLOW_HEADER_SIZE) {
-        cout << "Erro Pacote de resposta muito pequeno (" << bytesReceived << " bytes).\n";
+        cout << "Erro: Pacote de resposta do revive muito pequeno (" << bytesReceived << " bytes).\n";
         return false;
     }
 
+    // Declarando e preenchendo as variáveis que faltavam
     SlowHeader responseHeader;
     deserializationForSlowHeader(responseHeader, responseBuffer);
     Flags responseFlags = responseHeader.getFlags();
 
-    // Verificar se é uma mensagem "Failed" (rejeição explícita do revive)
-    // SID Nil, sttl 0, flags Reject (A/R=0), seqnum 0, acknum 0
-    if (responseFlags.AR == false && responseHeader.sid.isEqual(SID::Nil()) && responseHeader.getSttl() == 0 && responseHeader.seqNum == 0 && responseHeader.ackNum == 0) {
+    // Checa se a resposta é uma mensagem de falha
+    if (responseFlags.AR == false && responseHeader.sid.isEqual(SID::Nil())) {
         cout << "0-Way Connect REJEITADO (mensagem Failed recebida do central).\n";
-        this->sessionON = false;
-        this->currentSessionId = SID::Nil(); // Garantir que não há SID de sessão
-        prevSessionInfo.valid = false; // Invalidar info da sessão anterior, pois foi rejeitada
+        prevSessionInfo.valid = false;
         return false;
     }
 
-    // Verificar se é um "Ack" aceitando o revive
-    // A/R deve ser 1 (accepted).
-    uint32_t expectedAckNum = this->nextSeqNumToSend - 1; // O seqNum do nosso Data(revive)
+    // Checa se é um ACK de sucesso para o revive
+    uint32_t expectedAckNum = this->nextSeqNumToSend - 1;
 
-    if (responseFlags.ACK && responseFlags.AR && // ACK e Accept
-        responseHeader.sid.isEqual(prevSessionInfo.sid) && // SID deve ser o da sessão que tentamos reviver
+    if (responseFlags.ACK && responseFlags.AR &&
+        responseHeader.sid.isEqual(prevSessionInfo.sid) &&
         responseHeader.ackNum == expectedAckNum) {
 
         cout << "0-Way Connect ACEITO! Sessão reviveu.\n";
-        this->currentSessionId = responseHeader.sid; // Deve ser o mesmo que prevSessionInfo.sid
+        this->currentSessionId = responseHeader.sid;
         this->centralSttl = responseHeader.getSttl();
         this->lastCentralSeqNum = responseHeader.seqNum;
         this->centralWindowSize = responseHeader.window;
-        this->sessionON = true;
-        prevSessionInfo.valid = true;
-
-        cout << "   STTL: " << this->centralSttl << "\n";
-        cout << "   Próximo SeqNum do Central: " << this->lastCentralSeqNum << "\n";
-        cout << "   Janela do Central: " << this->centralWindowSize << "\n";
+        this->sessionON = true; // SESSÃO FINALMENTE ATIVA!
+        
         return true;
     }
 
-    // so é true se entrou no if de aceito com todas as coisas corretas
-    cout << "Erro 0way Resposta do central para revive não reconhecida ou inválida.\n";
-    this->sessionON = false; 
+    // Se chegou aqui, a resposta não foi nem "Failed" nem o "ACK" esperado.
+    cout << "Erro: Resposta do central para o revive não reconhecida ou inválida.\n";
     return false;
 }

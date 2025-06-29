@@ -1,5 +1,12 @@
 # Protocolo SLOW - Implementação do Peripheral
 
+## Integrantes
+Lázaro Pereira Vinaud Neto - 14675396
+
+Thales Sena de Queiroz - 14608873
+
+Guilherme Pascoale Godoy - 14576277
+
 ## 1. Introdução
 
 Este projeto é uma implementação do lado "Peripheral" do protocolo SLOW. O SLOW é um protocolo ad hoc da camada de transporte projetado para controle de fluxo de dados, utilizando UDP como sua infraestrutura de comunicação. Esta implementação foca nas funcionalidades essenciais do peripheral conforme especificado para o trabalho.
@@ -24,6 +31,9 @@ O peripheral implementado suporta as seguintes operações principais:
 * **0-Way Connect (Revive de Sessão)**:
     * Permite tentar reativar uma sessão anterior válida enviando uma mensagem `Data` com a flag `Revive` ativa. Esta mensagem já pode conter dados da aplicação.
     * O central pode responder com um `Ack` (contendo uma flag `Accept/Reject` para indicar o sucesso ou falha do revive) ou uma mensagem `Failed` explícita (com SID Nil e flag `Reject`).
+* **Fragmentação**:
+    * Permite que mensagens maiores do que MAX_DATA_SIZE sejam divididas em tamanhos menores e enviadas sequencialmente, sem que acarrete em erro ou perda de dados.
+    * A verificação do tamanho é feita no método SendData, que por sua vez também calculará a quantidade de pacotes necessária para que toda a mensagem seja enviada, gerará um fid e os fo's, bem como deixa a última mensagem com MB = true.
 
 ## 3. Estrutura do Cabeçalho SLOW (Resumido)
 
@@ -148,4 +158,8 @@ Informações da sessão atual armazenadas para possível revive.
 Mensagem de disconnect enviada E ACK recebido e validado.
 (Programa encerra)
 ```
+### f. Fragmentação
+O envio de uma mensagem cujo tamanho total em bits exceda MAX_DATA_SIZE vai resultar no envio de mensagens menores sequenciais.
+```bash
 
+```

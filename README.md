@@ -158,8 +158,3 @@ Informações da sessão atual armazenadas para possível revive.
 Mensagem de disconnect enviada E ACK recebido e validado.
 (Programa encerra)
 ```
-### f. Fragmentação
-O envio de uma mensagem cujo tamanho total em bits exceda MAX_DATA_SIZE vai resultar no envio de mensagens menores sequenciais.
-```bash
-
-```
